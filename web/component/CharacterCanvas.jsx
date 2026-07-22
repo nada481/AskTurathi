@@ -2,8 +2,8 @@
 
 import { useEffect, useRef, forwardRef } from 'react';
 import { useCharacterScene } from './useCharacterScene';
-import SparkleField from './SparkleField';
 import CharacterOverlay from './CharacterOverlay';
+import SparkleField from './SparkleField';
 
 /**
  * "Living artifact" character. All Three.js/WebGL logic lives in

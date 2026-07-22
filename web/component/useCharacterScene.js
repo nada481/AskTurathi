@@ -6,33 +6,25 @@ import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 
 /**
- * All the imperative Three.js work for the character lives here: scene/
- * lighting/glow setup, loading kahoola.glb, the render loop (bob, glow
- * pulse, wake burst, blink), and the setMouthWeights() API exposed on the
- * forwarded ref. Keeping this in its own hook lets CharacterCanvas.jsx stay
- * purely declarative (just JSX + a couple of small overlay components).
- *
- * MODEL EXPECTATIONS
- *   - File served from: /models/kahoola.glb (public/models/kahoola.glb)
- *   - Morph target (shape key) names containing "mouth"/"jaw"/"viseme" are
- *     matched against the keys of the `weights` object passed into
- *     setMouthWeights(). Names containing "blink"/"eye" drive the idle
- *     blink timer. Discovered morph names are logged to the console on load.
- *   - If the glb has animation clips, an "idle"-named one (or the first
- *     clip) is played automatically via AnimationMixer.
- *
- * @param {React.RefObject<HTMLDivElement>} containerRef - mount point for the <canvas>
- * @param {React.Ref} forwardedRef - ref from CharacterCanvas's forwardRef; receives setMouthWeights()
- * @param {'idle'|'waking'|'listening'|'thinking'|'speaking'} state
- * @param {() => void} [onWake] - called when the user taps/clicks while idle
- * @returns {{ modelError: string|null }}
+ * MOUTH BEHAVIOR (this is the part that changed):
+ *   - At rest: all mouth shape keys (normal_open/half_open/wide_open) sit
+ *     at 0 — i.e. Basis, mouth fully closed.
+ *   - While talking: a fixed-timer cycle steps through the mouth shape
+ *     keys ONE AT A TIME — never more than one active at once — following
+ *     the sequence [normal_open, half_open, wide_open, half_open], looping,
+ *     roughly every 150ms. This is driven by an internal timer, not by
+ *     live audio amplitude — much more predictable given how fiddly these
+ *     shape keys have been to get right.
+ *   - setMouthWeights() is still the entry point called every frame by
+ *     useMouthSync, but now it only flips an on/off "is talking" flag
+ *     (true if any incoming weight is above a small threshold) — the
+ *     actual stepping through keys happens inside the render loop below.
  */
 export function useCharacterScene(containerRef, forwardedRef, state, onWake) {
   const sceneRefs = useRef({});
   const [modelError, setModelError] = useState(null);
   const awake = state !== 'idle';
 
-  // ---------- Three.js scene setup (runs once) ----------
   useEffect(() => {
     const container = containerRef.current;
     const scene = new THREE.Scene();
@@ -49,9 +41,6 @@ export function useCharacterScene(containerRef, forwardedRef, state, onWake) {
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     renderer.setSize(container.clientWidth, container.clientHeight);
     renderer.outputColorSpace = THREE.SRGBColorSpace;
-    // PBR materials (which most glb exports use) need a proper tone map +
-    // environment reflection to read correctly — without this they can
-    // look muddy/dark even with strong direct lights.
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
     renderer.toneMappingExposure = 1.25;
     container.appendChild(renderer.domElement);
@@ -75,7 +64,6 @@ export function useCharacterScene(containerRef, forwardedRef, state, onWake) {
     fillLight.position.set(0, -1, 3);
     scene.add(fillLight);
 
-    // Glow halo behind the character
     function makeGlowTexture() {
       const size = 256;
       const c = document.createElement('canvas');
@@ -100,14 +88,16 @@ export function useCharacterScene(containerRef, forwardedRef, state, onWake) {
     glowSprite.position.set(0, 0.1, -0.6);
     scene.add(glowSprite);
 
-    // ---------- Character body: loaded from kahoola.glb ----------
     const characterGroup = new THREE.Group();
     scene.add(characterGroup);
 
     let mixer = null;
-    let morphMeshes = []; // meshes that have morphTargetDictionary/Influences
-    let blinkMorphKeys = []; // { mesh, index } pairs matching "blink"/"eye"
-    let jawBone = null; // fallback: rotate a jaw bone if there are no mouth morph targets
+    let morphMeshes = [];
+    let blinkMorphKeys = [];
+    // NEW: the ordered list of mouth-open shape keys, one entry per key
+    // found, e.g. [{mesh, index, name:'normal_open'}, {mesh, index, name:'half_open'}, ...]
+    let mouthOpenKeys = [];
+    let jawBone = null;
     let jawBoneRestX = 0;
 
     function findMorphTargets(root) {
@@ -128,6 +118,11 @@ export function useCharacterScene(containerRef, forwardedRef, state, onWake) {
       return meshes;
     }
 
+    // Preferred step order for the talk-cycle. Matched case-insensitively
+    // against your actual shape key names (normal_open / half_open / wide_open).
+    // If a name isn't found it's just skipped — doesn't break anything.
+    const MOUTH_CYCLE_ORDER = ['normal_open', 'half_open', 'wide_open', 'half_open'];
+
     const loader = new GLTFLoader();
     loader.load(
       '/models/kahoola.glb',
@@ -135,8 +130,6 @@ export function useCharacterScene(containerRef, forwardedRef, state, onWake) {
         const model = gltf.scene;
         characterGroup.add(model);
 
-        // Center + normalize scale so it fills roughly the same frame the
-        // old placeholder occupied, regardless of the model's native units.
         const box = new THREE.Box3().setFromObject(model);
         const size = new THREE.Vector3();
         box.getSize(size);
@@ -169,6 +162,29 @@ export function useCharacterScene(containerRef, forwardedRef, state, onWake) {
           });
         });
 
+        // Build the ordered mouth-cycle list by matching MOUTH_CYCLE_ORDER
+        // names against whatever shape keys actually exist on the model.
+        mouthOpenKeys = [];
+        MOUTH_CYCLE_ORDER.forEach((wantedName) => {
+          morphMeshes.forEach((mesh) => {
+            Object.entries(mesh.morphTargetDictionary).forEach(([name, index]) => {
+              if (name.toLowerCase() === wantedName.toLowerCase()) {
+                mouthOpenKeys.push({ mesh, index, name });
+              }
+            });
+          });
+        });
+        if (mouthOpenKeys.length) {
+          console.info(
+            '[useCharacterScene] Mouth talk-cycle order:',
+            mouthOpenKeys.map((k) => k.name)
+          );
+        } else {
+          console.warn(
+            '[useCharacterScene] None of normal_open/half_open/wide_open found — mouth will not animate.'
+          );
+        }
+
         if (gltf.animations && gltf.animations.length > 0) {
           mixer = new THREE.AnimationMixer(model);
           const idleClip =
@@ -179,6 +195,7 @@ export function useCharacterScene(containerRef, forwardedRef, state, onWake) {
         sceneRefs.current.model = model;
         sceneRefs.current.morphMeshes = morphMeshes;
         sceneRefs.current.blinkMorphKeys = blinkMorphKeys;
+        sceneRefs.current.mouthOpenKeys = mouthOpenKeys;
         sceneRefs.current.jawBone = jawBone;
         sceneRefs.current.jawBoneRestX = jawBoneRestX;
       },
@@ -189,7 +206,6 @@ export function useCharacterScene(containerRef, forwardedRef, state, onWake) {
       }
     );
 
-    // zzz sleep indicator
     function makeTextSprite(text, size) {
       const c = document.createElement('canvas');
       c.width = 128;
@@ -212,7 +228,6 @@ export function useCharacterScene(containerRef, forwardedRef, state, onWake) {
 
     characterGroup.position.y = -0.15;
 
-    // ---------- Sparkle burst on wake (3D particles, not the CSS field) ----------
     const burstGeo = new THREE.BufferGeometry();
     const burstCount = 60;
     const burstPositions = new Float32Array(burstCount * 3);
@@ -267,12 +282,23 @@ export function useCharacterScene(containerRef, forwardedRef, state, onWake) {
     }
     renderer.domElement.addEventListener('click', handleClick);
 
-    // ---------- Blink state ----------
     let blinkTimer = 0;
     let blinking = false;
     let blinkT = 0;
 
-    // ---------- Animation loop ----------
+    // ---------- NEW: mouth talk-cycle state ----------
+    let isTalking = false;
+    let mouthCycleTimer = 0;
+    let mouthCycleIndex = 0;
+    const MOUTH_STEP_SECONDS = 0.15;
+
+    function setAllMouthKeysTo(value) {
+      const keys = sceneRefs.current.mouthOpenKeys || [];
+      keys.forEach(({ mesh, index }) => {
+        mesh.morphTargetInfluences[index] = value;
+      });
+    }
+
     const timer = new THREE.Timer();
     timer.connect(document);
     let frameId;
@@ -325,8 +351,35 @@ export function useCharacterScene(containerRef, forwardedRef, state, onWake) {
         if (burstT > 1.1) burstActive = false;
       }
 
-      // periodic idle blink while awake, driven through a morph target if
-      // the model has one (name matching "blink"/"eye"); no-ops otherwise
+      // ---------- NEW: mouth talk-cycle, one key at a time, Basis when quiet ----------
+      const mouthKeys = sceneRefs.current.mouthOpenKeys || [];
+      if (mouthKeys.length) {
+        if (isTalking) {
+          mouthCycleTimer += dt;
+          if (mouthCycleTimer >= MOUTH_STEP_SECONDS) {
+            mouthCycleTimer = 0;
+            mouthCycleIndex = (mouthCycleIndex + 1) % mouthKeys.length;
+            setAllMouthKeysTo(0); // clear every key first
+            mouthKeys[mouthCycleIndex].mesh.morphTargetInfluences[mouthKeys[mouthCycleIndex].index] = 1;
+          }
+        } else {
+          // Not talking → Basis. Reset cycle so it always restarts from
+          // the beginning of the sequence next time speech starts.
+          setAllMouthKeysTo(0);
+          mouthCycleTimer = 0;
+          mouthCycleIndex = 0;
+        }
+      }
+
+      // Jaw bone fallback stays continuous/amplitude-driven (separate,
+      // lower-priority path — only matters if the model has NO mouth
+      // morph targets at all, which isn't the case for kahoola.glb).
+      const jawBone = sceneRefs.current.jawBone;
+      if (jawBone) {
+        const restX = sceneRefs.current.jawBoneRestX || 0;
+        jawBone.rotation.x = restX + (isTalking ? 0.35 : 0);
+      }
+
       if (isAwake) {
         blinkTimer += dt;
         if (!blinking && blinkTimer > 3.2 + Math.random() * 2) {
@@ -364,6 +417,7 @@ export function useCharacterScene(containerRef, forwardedRef, state, onWake) {
       zzz,
       triggerWakeBurst,
       awakeRef: false,
+      isTalkingRef: { get: () => isTalking, set: (v) => (isTalking = v) },
     };
 
     return () => {
@@ -377,7 +431,6 @@ export function useCharacterScene(containerRef, forwardedRef, state, onWake) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // ---------- Sync `state` prop into the running scene ----------
   useEffect(() => {
     sceneRefs.current.awakeRef = awake;
     if (awake && sceneRefs.current.zzz) {
@@ -388,41 +441,13 @@ export function useCharacterScene(containerRef, forwardedRef, state, onWake) {
     }
   }, [state, awake]);
 
-  // ---------- Imperative handle for lip sync ----------
+  // ---------- setMouthWeights: now just an on/off gate, not a value-blend ----------
   useImperativeHandle(forwardedRef, () => ({
     setMouthWeights(weights) {
-      const morphMeshes = sceneRefs.current.morphMeshes;
       const values = Object.values(weights || {});
       const maxWeight = values.length ? Math.max(...values) : 0;
-
-      if (morphMeshes && morphMeshes.length) {
-        // Reset all mouth-ish morphs each frame, then apply matches from `weights`
-        morphMeshes.forEach((mesh) => {
-          Object.entries(mesh.morphTargetDictionary).forEach(([name, index]) => {
-            if (/mouth|jaw|viseme/i.test(name)) {
-              mesh.morphTargetInfluences[index] = 0;
-            }
-          });
-        });
-
-        Object.entries(weights || {}).forEach(([key, value]) => {
-          morphMeshes.forEach((mesh) => {
-            Object.entries(mesh.morphTargetDictionary).forEach(([name, index]) => {
-              if (name.toLowerCase().includes(key.toLowerCase())) {
-                mesh.morphTargetInfluences[index] = value;
-              }
-            });
-          });
-        });
-      }
-
-      // Fallback for rigged (non-morph-target) models: rotate a jaw bone
-      // if one was found, so the model still visibly "talks".
-      const jawBone = sceneRefs.current.jawBone;
-      if (jawBone) {
-        const restX = sceneRefs.current.jawBoneRestX || 0;
-        jawBone.rotation.x = restX + maxWeight * 0.35;
-      }
+      const talkingNow = maxWeight > 0.08; // small threshold, tune if it feels twitchy
+      sceneRefs.current.isTalkingRef?.set(talkingNow);
     },
   }));
 
