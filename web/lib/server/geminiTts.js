@@ -35,23 +35,37 @@ function createWavHeader(dataLength, { numChannels, sampleRate, bitsPerSample })
   return buffer;
 }
 
-export async function speakWithGemini(text) {
+function sanitizeForTts(text) {
+  return text
+    .replace(/\*\*/g, '')
+    .replace(/\*/g, '')
+    .replace(/#/g, '')
+    .replace(/\n+/g, ' ')
+    .trim();
+}
+
+export async function speakWithGemini(text, language = 'en') {
   const ai = getGeminiClient();
+  const transcript = sanitizeForTts(text);
+  const voiceName = language?.startsWith('ar') ? 'Puck' : 'Kore';
 
   const response = await ai.models.generateContent({
     model: 'gemini-2.5-flash-preview-tts',
-    contents: [{ role: 'user', parts: [{ text }] }],
+    contents: [{ role: 'user', parts: [{ text: `Read the following text aloud exactly as written:\n${transcript}` }] }],
     config: {
-      responseModalities: ['audio'],
+      responseModalities: ['AUDIO'],
       speechConfig: {
-        voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } },
+        voiceConfig: { prebuiltVoiceConfig: { voiceName } },
       },
     },
   });
 
   const part = response.candidates?.[0]?.content?.parts?.[0]?.inlineData;
   if (!part?.data || !part?.mimeType) {
-    throw new Error('No audio returned from Gemini');
+    const finishReason = response.candidates?.[0]?.finishReason;
+    throw new Error(
+      `No audio returned from Gemini${finishReason ? ` (finishReason: ${finishReason})` : ''}`
+    );
   }
 
   const pcmBuffer = Buffer.from(part.data, 'base64');

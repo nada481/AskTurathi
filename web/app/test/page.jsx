@@ -7,7 +7,7 @@ import { useConversation } from '@/lib/useConversation';
  
 export default function TestPage() {
   const characterRef = useRef(null);
-  const { state, subtitle, wake } = useConversation(characterRef, 'en');
+  const { state, subtitle, wake, audioRef } = useConversation(characterRef, 'en');
  
   return (
     <div style={{ width: '100vw', height: '100vh' }}>
@@ -17,6 +17,7 @@ export default function TestPage() {
         subtitle={subtitle}
         onWake={wake}
       />
+      <audio ref={audioRef} style={{ display: 'none' }} />
     </div>
   );
 }

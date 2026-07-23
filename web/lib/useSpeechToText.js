@@ -122,18 +122,18 @@ export function useSpeechToText({ lang = 'en-US' } = {}) {
         // prevent most of these going forward; this backoff handles any
         // that still slip through (or genuine transient connectivity
         // issues) without hammering a server that might be unreachable.
+        if (!shouldRunRef.current) return;
+
+        if (networkRetryCountRef.current >= MAX_NETWORK_RETRIES) {
+          console.error(`[useSpeechToText] giving up after ${MAX_NETWORK_RETRIES} network errors.`);
+          pausedRef.current = true;
+          return;
+        }
+
         networkRetryCountRef.current += 1;
         console.error(
           `[useSpeechToText] network error (attempt ${networkRetryCountRef.current}/${MAX_NETWORK_RETRIES}).`
         );
-
-        if (!shouldRunRef.current) return; // caller doesn't want us listening anyway
-
-        if (networkRetryCountRef.current > MAX_NETWORK_RETRIES) {
-          console.error('[useSpeechToText] giving up after repeated network errors.');
-          pausedRef.current = true; // keep onend from auto-restarting further
-          return;
-        }
 
         pausedRef.current = true; // suppress onend's own restart below
         const delay = 1000 * 2 ** (networkRetryCountRef.current - 1); // 1s, 2s, 4s

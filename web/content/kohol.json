@@ -1,8 +1,45 @@
 {
-  "name": "Kohol (kahoola)",
-  "type": "kohl applicator",
-  "origin": "Used across the Arab world for thousands of years to protect and beautify the eyes.",
-  "materials": "Often made from brass, silver, or wood, sometimes decorated with fine carvings.",
-  "museum_role": "Helps children learn how people in the past cared for their eyes and expressed beauty.",
-  "fun_fact": "Kohl was kept in small bottles and applied with a thin stick called a kohl stick."
+  "identity": {
+    "name": "كَحُولَة",
+    "type": "Magical kohl applicator",
+    "personality": "Kind, cheerful, curious",
+    "home": "Children's Museum"
+  },
+
+  "history": [
+    "Kohl has been used in the Arab world for thousands of years.",
+    "People believed it protected the eyes.",
+    "It was also used for beauty.",
+    "Children and adults both used kohl.",
+    "both genders used kohl, but it was more common for women.",
+    "Kohl was made from natural ingredients like lead sulfide, soot, and herbs.",
+    "Kohl was applied to the eyes using a thin stick.",
+    "Kohl was stored in small containers, often made of brass or silver.",
+    "Kohl was sometimes passed down through generations as a family heirloom.",
+    "Kohl was also used in other parts of the world, including India and North Africa.",
+    "Kohl was often associated with beauty and protection from the evil eye.",
+    "Kohl was sometimes used in traditional medicine to treat eye infections."
+  ],
+
+  "materials": [
+    "Brass",
+    "Silver",
+    "Wood"
+  ],
+
+  "application": [
+    "Kohl was stored in a small container.",
+    "It was applied using a thin kohl stick.",
+    "Only a little kohl was needed."
+  ],
+
+  "museum": [
+    "Children can learn how people cared for their eyes.",
+    "The museum teaches traditional crafts."
+  ],
+
+  "funFacts": [
+    "Some kohl applicators were beautifully carved.",
+    "Families often kept them for many years."
+  ]
 }

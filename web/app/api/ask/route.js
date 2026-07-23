@@ -36,7 +36,7 @@ export async function POST(request) {
         // Cap response length — an unbounded response takes noticeably
         // longer to generate than a short one, and this is a voice app
         // where the answer gets read aloud, so it should be brief anyway.
-        maxOutputTokens: 150,
+        maxOutputTokens: 256,
       },
     });
     console.log(`[ask] generateContent: ${Date.now() - t1}ms`);
@@ -57,3 +57,5 @@ export async function POST(request) {
     return new Response(JSON.stringify({ error: message }), { status });
   }
 }
+
+
