@@ -59,9 +59,6 @@ export function useSpeechToText({ lang = 'en-US' } = {}) {
     }
   };
 
-  // Every place that wants to (re)start recognition goes through this, so
-  // there's always a beat between the previous session stopping and the
-  // next one starting.
   const scheduleRestart = (recognition, delay = RESTART_DELAY_MS) => {
     clearPendingRestart();
     restartTimeoutRef.current = setTimeout(() => {
@@ -102,8 +99,7 @@ export function useSpeechToText({ lang = 'en-US' } = {}) {
       if (final.trim()) {
         setTranscript(final);
         networkRetryCountRef.current = 0;
-        // Stop listening while we go fetch/speak a response, so the TTS
-        // playback doesn't get transcribed as if the user said it.
+
         pausedRef.current = true;
         recognition.stop();
         onFinalRef.current?.(final.trim());
@@ -111,17 +107,10 @@ export function useSpeechToText({ lang = 'en-US' } = {}) {
     };
 
     recognition.onerror = (event) => {
-      // 'no-speech' fires constantly in continuous mode while waiting for
-      // someone to talk — that's expected, not a real error.
       if (event.error === 'no-speech') return;
 
       if (event.error === 'network') {
-        // Often this isn't a real connectivity problem — it's frequently
-        // just Chrome complaining that we restarted too soon after the
-        // last session ended. The RESTART_DELAY_MS debounce above should
-        // prevent most of these going forward; this backoff handles any
-        // that still slip through (or genuine transient connectivity
-        // issues) without hammering a server that might be unreachable.
+
         if (!shouldRunRef.current) return;
 
         if (networkRetryCountRef.current >= MAX_NETWORK_RETRIES) {
@@ -156,8 +145,7 @@ export function useSpeechToText({ lang = 'en-US' } = {}) {
 
     recognition.onend = () => {
       setListening(false);
-      // Auto-restart (debounced) unless the caller explicitly stopped us,
-      // or we're deliberately paused while fetching/speaking a response.
+
       if (shouldRunRef.current && !pausedRef.current) {
         scheduleRestart(recognition);
       }
@@ -185,10 +173,7 @@ export function useSpeechToText({ lang = 'en-US' } = {}) {
     [getRecognition]
   );
 
-  // Call once a response has finished (or timed out) so listening
-  // resumes automatically — no need to re-tap the character. Debounced
-  // via scheduleRestart, since this is exactly the path that was
-  // triggering the spurious "network" error (restarting right after stop).
+
   const resume = useCallback(() => {
     pausedRef.current = false;
     if (!shouldRunRef.current) return;
@@ -197,8 +182,6 @@ export function useSpeechToText({ lang = 'en-US' } = {}) {
     scheduleRestart(recognition);
   }, []);
 
-  // Call while a response is being fetched/spoken, so the mic doesn't
-  // pick up the TTS audio as new user speech.
   const pause = useCallback(() => {
     pausedRef.current = true;
     clearPendingRestart();

@@ -4,10 +4,7 @@ import { getSystemPrompt } from '@/lib/server/contentPrompt';
 import { loadContent } from '@/lib/content';
 import { getGeminiClient } from '@/lib/server/geminiClient';
 
-// Cache the parsed facts across requests instead of re-reading/parsing the
-// JSON file on every single call. loadContent() presumably does a
-// synchronous file read — cheap per-call, but pointless repeated I/O on a
-// file that never changes at runtime.
+
 let cachedFacts = null;
 function getFacts() {
   if (!cachedFacts) {
@@ -33,9 +30,6 @@ export async function POST(request) {
       contents: [{ role: 'user', parts: [{ text: question }] }],
       config: {
         systemInstruction: getSystemPrompt(facts, language),
-        // Cap response length — an unbounded response takes noticeably
-        // longer to generate than a short one, and this is a voice app
-        // where the answer gets read aloud, so it should be brief anyway.
         maxOutputTokens: 256,
       },
     });

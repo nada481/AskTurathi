@@ -1,4 +1,4 @@
-const VOICE_ID = 'u0TsaWvt0v8migutHM3M'; // "Rachel" — swap for any voice_id from your ElevenLabs Voice Library
+const VOICE_ID = 'u0TsaWvt0v8migutHM3M';
 
 export async function speakWithElevenLabs(text) {
   const response = await fetch(
