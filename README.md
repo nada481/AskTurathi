@@ -14,16 +14,13 @@ Open [http://localhost:3000](http://localhost:3000).
 
 ## Deploy on Vercel
 
-The Next.js app lives in the `web/` folder.
+The Next.js app lives in the `web/` folder, not the repo root.
 
-1. Import the GitHub repo in Vercel.
-2. Set **Root Directory** to `web` (Project Settings → General).
-3. Redeploy.
+1. Open your Vercel project → **Settings** → **Build and Deployment**
+2. Set **Root Directory** to `web`
+3. Click **Save**
+4. Redeploy (Deployments → … → Redeploy)
 
-A root `vercel.json` is included with `"rootDirectory": "web"` so new deployments should pick this up automatically after you push.
+Do not add `rootDirectory` to `vercel.json` — Vercel rejects it. The Root Directory must be set in the dashboard.
 
-If you still see `404: NOT_FOUND`, open the latest deployment in Vercel and confirm:
-
-- Root Directory is `web`
-- Build command is `next build` (default)
-- The build logs show routes like `/` and `/kahoola`
+After a successful deploy, build logs should list routes like `/` and `/kahoola`.
