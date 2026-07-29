@@ -51,7 +51,7 @@ export async function speakWithGemini(text, language = 'en') {
 
   const response = await ai.models.generateContent({
     model: 'gemini-2.5-flash-preview-tts',
-    contents: [{ role: 'user', parts: [{ text: `Read the following text aloud exactly as written:\n${transcript}` }] }],
+    contents: [{ role: 'user', parts: [{ text: `Say: ${transcript}` }] }],
     config: {
       responseModalities: ['AUDIO'],
       speechConfig: {

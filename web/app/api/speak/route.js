@@ -9,6 +9,9 @@ function withTimeout(promise, ms, label) {
   return Promise.race([promise, timeout]).finally(() => clearTimeout(timeoutId));
 }
 
+// Library voices return 402 on free ElevenLabs plans — skip after first failure.
+let skipElevenLabs = false;
+
 export async function POST(request) {
   const t0 = Date.now();
   const { text, language = 'en' } = await request.json();
@@ -16,7 +19,7 @@ export async function POST(request) {
     return new Response(JSON.stringify({ error: 'Missing text' }), { status: 400 });
   }
 
-  const hasElevenLabs = Boolean(process.env.ELEVENLABS_API_KEY);
+  const hasElevenLabs = Boolean(process.env.ELEVENLABS_API_KEY) && !skipElevenLabs;
 
   if (hasElevenLabs) {
     try {
@@ -26,7 +29,12 @@ export async function POST(request) {
       console.log(`[speak] total: ${Date.now() - t0}ms`);
       return result;
     } catch (err) {
-      console.warn('ElevenLabs failed, falling back to Gemini TTS:', err.message);
+      if (err.message.includes('402') || err.message.includes('payment_required')) {
+        skipElevenLabs = true;
+        console.warn('ElevenLabs library voice unavailable on this plan — using Gemini TTS only.');
+      } else {
+        console.warn('ElevenLabs failed, falling back to Gemini TTS:', err.message);
+      }
     }
   }
 
@@ -37,7 +45,16 @@ export async function POST(request) {
     console.log(`[speak] total: ${Date.now() - t0}ms`);
     return result;
   } catch (err) {
-    console.error('TTS generation failed:', err.message);
-    return new Response(JSON.stringify({ error: 'TTS generation failed' }), { status: 500 });
+    const message = err.message || 'TTS generation failed';
+    const isQuota = message.includes('429') || message.includes('RESOURCE_EXHAUSTED');
+    console.error('TTS generation failed:', message);
+    return new Response(
+      JSON.stringify({
+        error: isQuota
+          ? 'Cloud TTS quota exceeded — client will use browser voice'
+          : 'TTS generation failed',
+      }),
+      { status: isQuota ? 503 : 500 }
+    );
   }
 }

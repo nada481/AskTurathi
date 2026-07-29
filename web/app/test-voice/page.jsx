@@ -4,12 +4,23 @@ import { useState, useRef, useEffect, useCallback } from 'react';
 import { useSpeechToText } from '@/lib/useSpeechToText';
 import { useMouthSync } from '@/lib/useMouthSync';
 import CharacterCanvas from '@/component/CharacterCanvas';
+import { unlockAudioPlayback } from '@/lib/playAudio';
+import { speakCharacter } from '@/lib/speakCharacter';
+import { detectLanguageFromSpeech, toSttLang } from '@/lib/detectLanguage';
 
-const FALLBACK_GREETING =
-  "Hello, little explorer! I'm Kahoola, the magical kohl applicator. Come closer and ask me about my stories!";
+const FALLBACK_GREETINGS = {
+  en: "Hello, little explorer! I'm Kahoola, the magical kohl applicator. Come closer and ask me about my stories!",
+  ar: 'مرحباً يا مستكشف الصغير! أنا كَحُولَة، مِكحلة سحرية. اقترب واسألني ما تريد!',
+};
 
 export default function TestVoicePage() {
-  const { start, resume, pause } = useSpeechToText({ lang: 'en-US' });
+  const [language, setLanguage] = useState('en');
+  const languageRef = useRef('en');
+  languageRef.current = language;
+
+  const { start, resume, pause, setLanguage: setSttLanguage } = useSpeechToText({
+    lang: toSttLang('en'),
+  });
   const [status, setStatus] = useState('idle');
   const audioRef = useRef(null);
   const characterRef = useRef(null);
@@ -18,33 +29,36 @@ export default function TestVoicePage() {
 
   useMouthSync(audioRef, characterRef);
 
+  const applyLanguage = useCallback(
+    (nextLang) => {
+      if (nextLang === languageRef.current) return;
+      languageRef.current = nextLang;
+      setLanguage(nextLang);
+      setSttLanguage(toSttLang(nextLang));
+    },
+    [setSttLanguage]
+  );
+
   const resumeListening = useCallback(() => {
     setStatus('listening');
     resume();
   }, [resume]);
 
-  const speakText = useCallback(async (text) => {
-    pause();
-    const speakRes = await fetch('/api/speak', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text, language: 'en' }),
-    });
-    if (!speakRes.ok) throw new Error(`speak failed: ${speakRes.status}`);
-
-    const audioEl = audioRef.current;
-    audioEl.src = URL.createObjectURL(await speakRes.blob());
-    setStatus('speaking');
-    await audioEl.play();
-
-    await new Promise((resolve) => {
-      audioEl.onended = resolve;
-    });
-  }, [pause]);
+  const speakText = useCallback(
+    async (text, langOverride) => {
+      const activeLang = langOverride ?? languageRef.current;
+      pause();
+      setStatus('speaking');
+      await speakCharacter(text, activeLang, audioRef.current);
+    },
+    [pause]
+  );
 
   const handleFinalTranscriptRef = useRef(async () => {});
 
   async function handleFinalTranscript(text) {
+    const nextLang = detectLanguageFromSpeech(text, languageRef.current);
+    applyLanguage(nextLang);
     pause();
     setStatus('thinking');
 
@@ -52,12 +66,12 @@ export default function TestVoicePage() {
       const askRes = await fetch('/api/ask', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ question: text, language: 'en' }),
+        body: JSON.stringify({ question: text, language: nextLang }),
       });
       if (!askRes.ok) throw new Error(`ask failed: ${askRes.status}`);
       const { answer: answerText } = await askRes.json();
 
-      await speakText(answerText);
+      await speakText(answerText, nextLang);
       resumeListening();
     } catch (err) {
       console.error(err);
@@ -80,12 +94,13 @@ export default function TestVoicePage() {
     greetedRef.current = true;
     setStatus('thinking');
 
-    let greetingText = FALLBACK_GREETING;
+    const activeLang = languageRef.current;
+    let greetingText = FALLBACK_GREETINGS[activeLang] || FALLBACK_GREETINGS.en;
     try {
       const res = await fetch('/api/greet', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ language: 'en' }),
+        body: JSON.stringify({ language: activeLang }),
       });
       if (res.ok) {
         const data = await res.json();
@@ -96,29 +111,17 @@ export default function TestVoicePage() {
     }
 
     try {
-      await speakText(greetingText);
+      await speakText(greetingText, activeLang);
     } catch (err) {
-      console.error('[TestVoicePage] greeting TTS failed:', err);
+      console.error('[TestVoicePage] all TTS failed:', err);
     }
 
     beginListening();
   }, [speakText, beginListening]);
 
   useEffect(() => {
-    function unlockAndGreet() {
-      const audioEl = audioRef.current;
-      if (audioEl) {
-        audioEl.muted = true;
-        audioEl
-          .play()
-          .then(() => {
-            audioEl.pause();
-            audioEl.muted = false;
-          })
-          .catch(() => {
-            audioEl.muted = false;
-          });
-      }
+    async function unlockAndGreet() {
+      await unlockAudioPlayback(audioRef.current);
       playGreeting();
     }
     window.addEventListener('pointerdown', unlockAndGreet, { once: true });

@@ -29,21 +29,25 @@ import { useRef, useState, useCallback, useEffect } from 'react';
  * NOTE: only supported in Chromium-based browsers (Chrome, Edge). Safari
  * and Firefox don't implement SpeechRecognition.
  *
- * @param {{ lang?: string }} [options]
+ * @param {{ lang?: string, onActivity?: () => void }} [options]
  * @returns {{
  *   start: (onFinalTranscript: (text: string) => void) => void,
  *   stop: () => void,
  *   pause: () => void,
  *   resume: () => void,
+ *   setLanguage: (lang: string) => void,
  *   transcript: string,
  *   listening: boolean,
  * }}
  */
-export function useSpeechToText({ lang = 'en-US' } = {}) {
+export function useSpeechToText({ lang: initialLang = 'en-US', onActivity } = {}) {
   const [transcript, setTranscript] = useState('');
   const [listening, setListening] = useState(false);
+  const langRef = useRef(initialLang);
   const recognitionRef = useRef(null);
   const onFinalRef = useRef(null);
+  const onActivityRef = useRef(onActivity);
+  onActivityRef.current = onActivity;
   const shouldRunRef = useRef(false); // true while the caller wants us listening at all
   const pausedRef = useRef(false); // true while we're deliberately not listening (thinking/speaking)
   const networkRetryCountRef = useRef(0);
@@ -73,14 +77,17 @@ export function useSpeechToText({ lang = 'en-US' } = {}) {
   };
 
   const getRecognition = useCallback(() => {
-    if (recognitionRef.current) return recognitionRef.current;
+    if (recognitionRef.current) {
+      recognitionRef.current.lang = langRef.current;
+      return recognitionRef.current;
+    }
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SpeechRecognition) {
       console.error('[useSpeechToText] SpeechRecognition not supported in this browser.');
       return null;
     }
     const recognition = new SpeechRecognition();
-    recognition.lang = lang;
+    recognition.lang = langRef.current;
     recognition.continuous = true;
     recognition.interimResults = true;
 
@@ -95,7 +102,10 @@ export function useSpeechToText({ lang = 'en-US' } = {}) {
           interim += chunk;
         }
       }
-      if (interim) setTranscript(interim);
+      if (interim) {
+        setTranscript(interim);
+        onActivityRef.current?.();
+      }
       if (final.trim()) {
         setTranscript(final);
         networkRetryCountRef.current = 0;
@@ -120,7 +130,7 @@ export function useSpeechToText({ lang = 'en-US' } = {}) {
         }
 
         networkRetryCountRef.current += 1;
-        console.error(
+        console.warn(
           `[useSpeechToText] network error (attempt ${networkRetryCountRef.current}/${MAX_NETWORK_RETRIES}).`
         );
 
@@ -153,7 +163,15 @@ export function useSpeechToText({ lang = 'en-US' } = {}) {
 
     recognitionRef.current = recognition;
     return recognition;
-  }, [lang]);
+  }, []);
+
+  const setLanguage = useCallback((newLang) => {
+    if (langRef.current === newLang) return;
+    langRef.current = newLang;
+    if (recognitionRef.current) {
+      recognitionRef.current.lang = newLang;
+    }
+  }, []);
 
   const start = useCallback(
     (onFinalTranscript) => {
@@ -204,5 +222,5 @@ export function useSpeechToText({ lang = 'en-US' } = {}) {
     };
   }, []);
 
-  return { start, stop, pause, resume, transcript, listening };
+  return { start, stop, pause, resume, setLanguage, transcript, listening };
 }
