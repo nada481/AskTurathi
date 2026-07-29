@@ -5,6 +5,22 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 
+/** Reuse in-flight/completed GLTF loads (avoids Strict Mode double-fetch blob races). */
+const gltfCache = new Map();
+
+function loadGltfCached(url) {
+  if (!gltfCache.has(url)) {
+    gltfCache.set(
+      url,
+      new Promise((resolve, reject) => {
+        const loader = new GLTFLoader();
+        loader.load(url, resolve, undefined, reject);
+      })
+    );
+  }
+  return gltfCache.get(url);
+}
+
 /**
  * MOUTH BEHAVIOR (this is the part that changed):
  *   - At rest: all mouth shape keys (normal_open/half_open/wide_open) sit
@@ -123,11 +139,13 @@ export function useCharacterScene(containerRef, forwardedRef, state, onWake) {
     // If a name isn't found it's just skipped — doesn't break anything.
     const MOUTH_CYCLE_ORDER = ['normal_open', 'half_open', 'wide_open', 'half_open'];
 
-    const loader = new GLTFLoader();
-    loader.load(
-      '/models/kahoola.glb',
-      (gltf) => {
-        const model = gltf.scene;
+    let cancelled = false;
+
+    loadGltfCached('/models/kahoola.glb')
+      .then((gltf) => {
+        if (cancelled) return;
+
+        const model = gltf.scene.clone(true);
         characterGroup.add(model);
 
         const box = new THREE.Box3().setFromObject(model);
@@ -198,13 +216,12 @@ export function useCharacterScene(containerRef, forwardedRef, state, onWake) {
         sceneRefs.current.mouthOpenKeys = mouthOpenKeys;
         sceneRefs.current.jawBone = jawBone;
         sceneRefs.current.jawBoneRestX = jawBoneRestX;
-      },
-      undefined,
-      (err) => {
+      })
+      .catch((err) => {
+        if (cancelled) return;
         console.error('[useCharacterScene] Failed to load kahoola.glb:', err);
         setModelError(err?.message || 'Failed to load model');
-      }
-    );
+      });
 
     function makeTextSprite(text, size) {
       const c = document.createElement('canvas');
@@ -421,6 +438,7 @@ export function useCharacterScene(containerRef, forwardedRef, state, onWake) {
     };
 
     return () => {
+      cancelled = true;
       cancelAnimationFrame(frameId);
       window.removeEventListener('resize', handleResize);
       renderer.domElement.removeEventListener('click', handleClick);

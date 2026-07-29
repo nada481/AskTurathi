@@ -13,7 +13,7 @@ const FALLBACK_GREETINGS = {
   ar: 'مرحباً يا مستكشف الصغير! أنا كَحُولَة، مِكحلة سحرية. اقترب واسألني ما تريد!',
 };
 
-export default function TestVoicePage() {
+export default function KahoolaPage() {
   const [language, setLanguage] = useState('en');
   const languageRef = useRef('en');
   languageRef.current = language;
@@ -45,11 +45,11 @@ export default function TestVoicePage() {
   }, [resume]);
 
   const speakText = useCallback(
-    async (text, langOverride) => {
+    async (text, langOverride, serverAudio) => {
       const activeLang = langOverride ?? languageRef.current;
       pause();
       setStatus('speaking');
-      await speakCharacter(text, activeLang, audioRef.current);
+      await speakCharacter(text, activeLang, audioRef.current, serverAudio);
     },
     [pause]
   );
@@ -63,15 +63,19 @@ export default function TestVoicePage() {
     setStatus('thinking');
 
     try {
-      const askRes = await fetch('/api/ask', {
+      const askRes = await fetch('/api/converse', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ question: text, language: nextLang }),
       });
-      if (!askRes.ok) throw new Error(`ask failed: ${askRes.status}`);
-      const { answer: answerText } = await askRes.json();
+      if (!askRes.ok) throw new Error(`converse failed: ${askRes.status}`);
+      const { answer: answerText, audio, audioMime } = await askRes.json();
 
-      await speakText(answerText, nextLang);
+      await speakText(
+        answerText,
+        nextLang,
+        audio ? { audio, audioMime } : null
+      );
       resumeListening();
     } catch (err) {
       console.error(err);
@@ -96,6 +100,7 @@ export default function TestVoicePage() {
 
     const activeLang = languageRef.current;
     let greetingText = FALLBACK_GREETINGS[activeLang] || FALLBACK_GREETINGS.en;
+    let serverAudio = null;
     try {
       const res = await fetch('/api/greet', {
         method: 'POST',
@@ -105,15 +110,16 @@ export default function TestVoicePage() {
       if (res.ok) {
         const data = await res.json();
         if (data.greeting) greetingText = data.greeting;
+        if (data.audio) serverAudio = { audio: data.audio, audioMime: data.audioMime };
       }
     } catch (err) {
       console.warn('Greeting failed, using fallback:', err);
     }
 
     try {
-      await speakText(greetingText, activeLang);
+      await speakText(greetingText, activeLang, serverAudio);
     } catch (err) {
-      console.error('[TestVoicePage] all TTS failed:', err);
+      console.error('[KahoolaPage] all TTS failed:', err);
     }
 
     beginListening();

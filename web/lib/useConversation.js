@@ -66,7 +66,7 @@ export function useConversation(characterRef, initialLanguage = 'en') {
   useMouthSync(audioRef, characterRef);
 
   const speak = useCallback(
-    async (text, langOverride) => {
+    async (text, langOverride, serverAudio) => {
       if (!text) return;
       const activeLang = langOverride ?? languageRef.current;
       pauseSTT();
@@ -77,7 +77,7 @@ export function useConversation(characterRef, initialLanguage = 'en') {
       const audioEl = audioRef.current;
       if (!audioEl) throw new Error('audio element not ready');
 
-      await speakCharacter(text, activeLang, audioEl);
+      await speakCharacter(text, activeLang, audioEl, serverAudio);
       } catch (err) {
         console.error('[speak] failed:', err);
       }
@@ -94,14 +94,14 @@ export function useConversation(characterRef, initialLanguage = 'en') {
       setState('thinking');
 
       try {
-        const res = await fetch('/api/ask', {
+        const res = await fetch('/api/converse', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ question, language: nextLang }),
         });
-        if (!res.ok) throw new Error(`ask failed: ${res.status}`);
-        const { answer } = await res.json();
-        await speak(answer, nextLang);
+        if (!res.ok) throw new Error(`converse failed: ${res.status}`);
+        const { answer, audio, audioMime } = await res.json();
+        await speak(answer, nextLang, audio ? { audio, audioMime } : null);
       } catch (err) {
         console.error('[ask] failed:', err);
         listenAgainRef.current();
@@ -136,6 +136,7 @@ export function useConversation(characterRef, initialLanguage = 'en') {
 
     const activeLang = languageRef.current;
     let greetingText;
+    let serverAudio = null;
     try {
       const res = await fetch('/api/greet', {
         method: 'POST',
@@ -145,6 +146,7 @@ export function useConversation(characterRef, initialLanguage = 'en') {
       if (res.ok) {
         const data = await res.json();
         greetingText = data.greeting;
+        serverAudio = data.audio ? { audio: data.audio, audioMime: data.audioMime } : null;
       } else {
         console.warn('Greeting API returned', res.status);
       }
@@ -152,7 +154,11 @@ export function useConversation(characterRef, initialLanguage = 'en') {
       console.warn('Greeting generation failed, using fallback:', err);
     }
 
-    await speak(greetingText || FALLBACK_GREETINGS[activeLang] || FALLBACK_GREETINGS.en, activeLang);
+    await speak(
+      greetingText || FALLBACK_GREETINGS[activeLang] || FALLBACK_GREETINGS.en,
+      activeLang,
+      serverAudio
+    );
   }, [state, speak]);
 
   return { state, subtitle, wake, goIdle, audioRef, language };
