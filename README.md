@@ -14,13 +14,24 @@ Open [http://localhost:3000](http://localhost:3000).
 
 ## Deploy on Vercel
 
-The Next.js app lives in the `web/` folder, not the repo root.
+The Next.js app lives in the `web/` folder.
 
-1. Open your Vercel project → **Settings** → **Build and Deployment**
-2. Set **Root Directory** to `web`
-3. Click **Save**
-4. Redeploy (Deployments → … → Redeploy)
+### Required settings
 
-Do not add `rootDirectory` to `vercel.json` — Vercel rejects it. The Root Directory must be set in the dashboard.
+In **Settings → Build and Deployment**:
 
-After a successful deploy, build logs should list routes like `/` and `/kahoola`.
+| Setting | Value |
+|---------|--------|
+| **Root Directory** | `web` |
+| **Framework Preset** | `Next.js` |
+| **Build Command** | leave default (`next build`) — override **OFF** |
+| **Output Directory** | leave default — override **OFF** |
+| **Install Command** | leave default — override **OFF** |
+
+### Common 404 cause
+
+If the build log shows routes like `/` and `/kahoola` but the live site returns `404: NOT_FOUND`, the framework is usually set to **Other** instead of **Next.js**. Vercel runs `next build` but then deploys the wrong output.
+
+This repo includes `web/vercel.json` with `"framework": "nextjs"` so Vercel uses the Next.js runtime on each deploy.
+
+After pushing, redeploy and open the **Visit** link on the latest **Ready** deployment (not an old preview URL).
