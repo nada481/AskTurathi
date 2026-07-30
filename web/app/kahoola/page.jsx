@@ -5,7 +5,7 @@ import { useSpeechToText } from '@/lib/useSpeechToText';
 import { useMouthSync } from '@/lib/useMouthSync';
 import CharacterCanvas from '@/component/CharacterCanvas';
 import { unlockAudioPlayback } from '@/lib/playAudio';
-import { speakCharacter } from '@/lib/speakCharacter';
+import { speakCharacter, speakWithBrowser } from '@/lib/speakCharacter';
 import { detectLanguageFromSpeech, toSttLang } from '@/lib/detectLanguage';
 
 const FALLBACK_GREETINGS = {
@@ -20,14 +20,17 @@ export default function KahoolaPage() {
 
   const { start, resume, pause, setLanguage: setSttLanguage } = useSpeechToText({
     lang: toSttLang('en'),
+    silenceTimeoutMs: 3000,
   });
+
   const [status, setStatus] = useState('idle');
   const audioRef = useRef(null);
   const characterRef = useRef(null);
   const greetedRef = useRef(false);
+  const isReplyingRef = useRef(false);
   const sttStartedRef = useRef(false);
 
-  useMouthSync(audioRef, characterRef);
+  useMouthSync(audioRef, characterRef, { silenceTimeoutMs: 120000 });
 
   const applyLanguage = useCallback(
     (nextLang) => {
@@ -39,17 +42,27 @@ export default function KahoolaPage() {
     [setSttLanguage]
   );
 
-  const resumeListening = useCallback(() => {
+  const startListening = useCallback(() => {
+    if (!sttStartedRef.current) {
+      sttStartedRef.current = true;
+      start((text) => handleFinalTranscriptRef.current(text));
+    } else {
+      resume();
+    }
     setStatus('listening');
-    resume();
-  }, [resume]);
+  }, [start, resume]);
 
   const speakText = useCallback(
     async (text, langOverride, serverAudio) => {
       const activeLang = langOverride ?? languageRef.current;
       pause();
       setStatus('speaking');
-      await speakCharacter(text, activeLang, audioRef.current, serverAudio);
+      try {
+        await speakCharacter(text, activeLang, audioRef.current, serverAudio);
+      } catch (err) {
+        console.warn('[KahoolaPage] speakCharacter failed, using browser voice:', err);
+        await speakWithBrowser(text, activeLang);
+      }
     },
     [pause]
   );
@@ -57,6 +70,9 @@ export default function KahoolaPage() {
   const handleFinalTranscriptRef = useRef(async () => {});
 
   async function handleFinalTranscript(text) {
+    if (!text?.trim() || isReplyingRef.current) return;
+    isReplyingRef.current = true;
+
     const nextLang = detectLanguageFromSpeech(text, languageRef.current);
     applyLanguage(nextLang);
     pause();
@@ -76,31 +92,23 @@ export default function KahoolaPage() {
         nextLang,
         audio ? { audio, audioMime } : null
       );
-      resumeListening();
     } catch (err) {
       console.error(err);
-      resumeListening();
+    } finally {
+      isReplyingRef.current = false;
+      startListening();
     }
   }
 
   handleFinalTranscriptRef.current = handleFinalTranscript;
 
-  const beginListening = useCallback(() => {
-    if (!sttStartedRef.current) {
-      sttStartedRef.current = true;
-      start((text) => handleFinalTranscriptRef.current(text));
-    }
-    setStatus('listening');
-  }, [start]);
-
   const playGreeting = useCallback(async () => {
-    if (greetedRef.current) return;
-    greetedRef.current = true;
-    setStatus('thinking');
-
     const activeLang = languageRef.current;
     let greetingText = FALLBACK_GREETINGS[activeLang] || FALLBACK_GREETINGS.en;
     let serverAudio = null;
+
+    setStatus('thinking');
+
     try {
       const res = await fetch('/api/greet', {
         method: 'POST',
@@ -113,30 +121,37 @@ export default function KahoolaPage() {
         if (data.audio) serverAudio = { audio: data.audio, audioMime: data.audioMime };
       }
     } catch (err) {
-      console.warn('Greeting failed, using fallback:', err);
+      console.warn('[KahoolaPage] greet fetch failed:', err);
     }
 
     try {
       await speakText(greetingText, activeLang, serverAudio);
     } catch (err) {
-      console.error('[KahoolaPage] all TTS failed:', err);
+      console.error('[KahoolaPage] greeting failed:', err);
+    } finally {
+      startListening();
     }
+  }, [speakText, startListening]);
 
-    beginListening();
-  }, [speakText, beginListening]);
+  const beginSession = useCallback(async () => {
+    if (greetedRef.current) return;
+    greetedRef.current = true;
+
+    await unlockAudioPlayback(audioRef.current);
+    await playGreeting();
+  }, [playGreeting]);
 
   useEffect(() => {
-    async function unlockAndGreet() {
-      await unlockAudioPlayback(audioRef.current);
-      playGreeting();
-    }
-    window.addEventListener('pointerdown', unlockAndGreet, { once: true });
-    window.addEventListener('keydown', unlockAndGreet, { once: true });
-    return () => {
-      window.removeEventListener('pointerdown', unlockAndGreet);
-      window.removeEventListener('keydown', unlockAndGreet);
+    const onBegin = () => {
+      void beginSession();
     };
-  }, [playGreeting]);
+    window.addEventListener('pointerdown', onBegin, { once: true });
+    window.addEventListener('keydown', onBegin, { once: true });
+    return () => {
+      window.removeEventListener('pointerdown', onBegin);
+      window.removeEventListener('keydown', onBegin);
+    };
+  }, [beginSession]);
 
   return (
     <div style={{ position: 'fixed', inset: 0, overflow: 'hidden' }}>
@@ -144,11 +159,19 @@ export default function KahoolaPage() {
         ref={characterRef}
         state={status}
         onWake={() => {
-          if (!greetedRef.current) playGreeting();
+          void beginSession();
         }}
       />
 
-      <audio ref={audioRef} style={{ display: 'none' }} />
+      {status === 'idle' && (
+        <div className="pointer-events-none absolute inset-x-0 bottom-10 z-20 text-center">
+          <p className="font-orbitron text-xs tracking-[0.18em] uppercase text-[#eae6f6]/80">
+            Tap Kahoola to begin
+          </p>
+        </div>
+      )}
+
+      <audio ref={audioRef} playsInline preload="auto" style={{ display: 'none' }} />
     </div>
   );
 }

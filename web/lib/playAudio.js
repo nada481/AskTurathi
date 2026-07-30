@@ -17,6 +17,10 @@ export async function unlockAudioPlayback(audioEl) {
   if (!audioEl) return;
   audioEl.muted = true;
   try {
+    if (!audioEl.src) {
+      audioEl.src =
+        'data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAZGF0YQQAAAAAAA==';
+    }
     await playAudio(audioEl);
     audioEl.pause();
     audioEl.currentTime = 0;

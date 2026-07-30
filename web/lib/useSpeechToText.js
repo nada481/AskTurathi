@@ -3,58 +3,33 @@
 import { useRef, useState, useCallback, useEffect } from 'react';
 
 /**
- * Wraps the browser's SpeechRecognition (Web Speech API) for hands-free,
- * continuous listening.
- *
- * Chrome/Edge will still end a recognition session after a pause in
- * speech even with `continuous: true` — that's normal browser behavior,
- * not a bug. This hook works around it by auto-restarting recognition in
- * `onend` whenever the caller hasn't explicitly called `stop()`, so from
- * the outside you never have to manually re-trigger listening: call
- * `start()` once and it keeps going.
- *
- * IMPORTANT: every restart goes through a small delay (RESTART_DELAY_MS)
- * rather than calling `.start()` immediately. Calling `.start()` again too
- * soon after a session stops — before Chrome finishes tearing down the
- * previous session's internal socket — commonly surfaces as a spurious
- * `"network"` error, even when there's nothing actually wrong with the
- * connection. This bit us specifically in the resume()-right-after-stop
- * path, which is why every restart path below is debounced the same way.
- *
- * While an answer is being fetched/spoken, call `pause()` so the TTS
- * playback doesn't get picked up as user speech, then `resume()` once
- * you're ready to listen again — useMouthSync's onSilenceTimeout and
- * the audio `onended` handler are natural places to call `resume()`.
- *
- * NOTE: only supported in Chromium-based browsers (Chrome, Edge). Safari
- * and Firefox don't implement SpeechRecognition.
- *
- * @param {{ lang?: string, onActivity?: () => void }} [options]
- * @returns {{
- *   start: (onFinalTranscript: (text: string) => void) => void,
- *   stop: () => void,
- *   pause: () => void,
- *   resume: () => void,
- *   setLanguage: (lang: string) => void,
- *   transcript: string,
- *   listening: boolean,
- * }}
+ * Continuous speech recognition with silence-based utterance end.
+ * After `silenceTimeoutMs` with no new words (default 3s), the
+ * captured text is finalized and passed to the callback.
  */
-export function useSpeechToText({ lang: initialLang = 'en-US', onActivity } = {}) {
+export function useSpeechToText({
+  lang: initialLang = 'en-US',
+  onActivity,
+  silenceTimeoutMs = 3000,
+} = {}) {
   const [transcript, setTranscript] = useState('');
   const [listening, setListening] = useState(false);
   const langRef = useRef(initialLang);
+  const silenceTimeoutRef = useRef(silenceTimeoutMs);
+  silenceTimeoutRef.current = silenceTimeoutMs;
+
   const recognitionRef = useRef(null);
   const onFinalRef = useRef(null);
   const onActivityRef = useRef(onActivity);
   onActivityRef.current = onActivity;
-  const shouldRunRef = useRef(false); // true while the caller wants us listening at all
-  const pausedRef = useRef(false); // true while we're deliberately not listening (thinking/speaking)
-  const networkRetryCountRef = useRef(0);
-  const restartTimeoutRef = useRef(null); // any pending debounced restart (normal or network-retry)
 
-  const MAX_NETWORK_RETRIES = 3;
-  const RESTART_DELAY_MS = 250;
+  const shouldRunRef = useRef(false);
+  const pausedRef = useRef(false);
+  const networkRetryCountRef = useRef(0);
+  const restartTimeoutRef = useRef(null);
+  const silenceWatchRef = useRef(null);
+  const pendingTranscriptRef = useRef('');
+  const lastSpeechAtRef = useRef(0);
 
   const clearPendingRestart = () => {
     if (restartTimeoutRef.current) {
@@ -63,7 +38,57 @@ export function useSpeechToText({ lang: initialLang = 'en-US', onActivity } = {}
     }
   };
 
-  const scheduleRestart = (recognition, delay = RESTART_DELAY_MS) => {
+  const stopSilenceWatch = () => {
+    if (silenceWatchRef.current) {
+      clearInterval(silenceWatchRef.current);
+      silenceWatchRef.current = null;
+    }
+  };
+
+  const finalizePending = () => {
+    const recognition = recognitionRef.current;
+    const text = pendingTranscriptRef.current.trim();
+    pendingTranscriptRef.current = '';
+    stopSilenceWatch();
+
+    if (!text || !recognition) return;
+
+    networkRetryCountRef.current = 0;
+    pausedRef.current = true;
+    setTranscript(text);
+    try {
+      recognition.stop();
+    } catch {
+      // already stopped
+    }
+    setListening(false);
+    onFinalRef.current?.(text);
+  };
+
+  const startSilenceWatch = () => {
+    stopSilenceWatch();
+    silenceWatchRef.current = setInterval(() => {
+      if (pausedRef.current || !shouldRunRef.current) return;
+
+      const text = pendingTranscriptRef.current.trim();
+      if (!text) return;
+
+      const quietFor = Date.now() - lastSpeechAtRef.current;
+      if (quietFor >= silenceTimeoutRef.current) {
+        finalizePending();
+      }
+    }, 200);
+  };
+
+  const noteSpeech = (text) => {
+    if (!text || text === pendingTranscriptRef.current) return;
+    pendingTranscriptRef.current = text;
+    lastSpeechAtRef.current = Date.now();
+    setTranscript(text);
+    onActivityRef.current?.();
+  };
+
+  const scheduleRestart = (recognition, delay = 250) => {
     clearPendingRestart();
     restartTimeoutRef.current = setTimeout(() => {
       restartTimeoutRef.current = null;
@@ -71,7 +96,7 @@ export function useSpeechToText({ lang: initialLang = 'en-US', onActivity } = {}
         recognition.start();
         setListening(true);
       } catch {
-        // "already started" race — safe to ignore
+        // already started
       }
     }, delay);
   };
@@ -81,61 +106,41 @@ export function useSpeechToText({ lang: initialLang = 'en-US', onActivity } = {}
       recognitionRef.current.lang = langRef.current;
       return recognitionRef.current;
     }
+
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SpeechRecognition) {
       console.error('[useSpeechToText] SpeechRecognition not supported in this browser.');
       return null;
     }
+
     const recognition = new SpeechRecognition();
     recognition.lang = langRef.current;
     recognition.continuous = true;
     recognition.interimResults = true;
 
     recognition.onresult = (event) => {
-      let interim = '';
-      let final = '';
-      for (let i = event.resultIndex; i < event.results.length; i++) {
-        const chunk = event.results[i][0].transcript;
-        if (event.results[i].isFinal) {
-          final += chunk;
-        } else {
-          interim += chunk;
-        }
+      let combined = '';
+      for (let i = 0; i < event.results.length; i++) {
+        combined += event.results[i][0].transcript;
       }
-      if (interim) {
-        setTranscript(interim);
-        onActivityRef.current?.();
-      }
-      if (final.trim()) {
-        setTranscript(final);
-        networkRetryCountRef.current = 0;
-
-        pausedRef.current = true;
-        recognition.stop();
-        onFinalRef.current?.(final.trim());
-      }
+      noteSpeech(combined.trim());
     };
 
     recognition.onerror = (event) => {
       if (event.error === 'no-speech') return;
 
       if (event.error === 'network') {
-
         if (!shouldRunRef.current) return;
 
-        if (networkRetryCountRef.current >= MAX_NETWORK_RETRIES) {
-          console.error(`[useSpeechToText] giving up after ${MAX_NETWORK_RETRIES} network errors.`);
+        if (networkRetryCountRef.current >= 3) {
+          console.error('[useSpeechToText] giving up after 3 network errors.');
           pausedRef.current = true;
           return;
         }
 
         networkRetryCountRef.current += 1;
-        console.warn(
-          `[useSpeechToText] network error (attempt ${networkRetryCountRef.current}/${MAX_NETWORK_RETRIES}).`
-        );
-
-        pausedRef.current = true; // suppress onend's own restart below
-        const delay = 1000 * 2 ** (networkRetryCountRef.current - 1); // 1s, 2s, 4s
+        pausedRef.current = true;
+        const delay = 1000 * 2 ** (networkRetryCountRef.current - 1);
         clearPendingRestart();
         restartTimeoutRef.current = setTimeout(() => {
           restartTimeoutRef.current = null;
@@ -155,7 +160,6 @@ export function useSpeechToText({ lang: initialLang = 'en-US', onActivity } = {}
 
     recognition.onend = () => {
       setListening(false);
-
       if (shouldRunRef.current && !pausedRef.current) {
         scheduleRestart(recognition);
       }
@@ -179,22 +183,33 @@ export function useSpeechToText({ lang: initialLang = 'en-US', onActivity } = {}
       shouldRunRef.current = true;
       pausedRef.current = false;
       networkRetryCountRef.current = 0;
+      pendingTranscriptRef.current = '';
+      lastSpeechAtRef.current = Date.now();
+
       const recognition = getRecognition();
       if (!recognition) return;
+
+      startSilenceWatch();
+
       try {
         recognition.start();
         setListening(true);
       } catch {
-        // already running — fine
+        // already running
       }
     },
     [getRecognition]
   );
 
-
   const resume = useCallback(() => {
     pausedRef.current = false;
+    pendingTranscriptRef.current = '';
+    lastSpeechAtRef.current = Date.now();
+
     if (!shouldRunRef.current) return;
+
+    startSilenceWatch();
+
     const recognition = recognitionRef.current;
     if (!recognition) return;
     scheduleRestart(recognition);
@@ -202,13 +217,18 @@ export function useSpeechToText({ lang: initialLang = 'en-US', onActivity } = {}
 
   const pause = useCallback(() => {
     pausedRef.current = true;
+    pendingTranscriptRef.current = '';
+    stopSilenceWatch();
     clearPendingRestart();
     recognitionRef.current?.stop();
+    setListening(false);
   }, []);
 
   const stop = useCallback(() => {
     shouldRunRef.current = false;
     pausedRef.current = false;
+    pendingTranscriptRef.current = '';
+    stopSilenceWatch();
     clearPendingRestart();
     recognitionRef.current?.stop();
     setListening(false);
@@ -217,6 +237,7 @@ export function useSpeechToText({ lang: initialLang = 'en-US', onActivity } = {}
   useEffect(() => {
     return () => {
       shouldRunRef.current = false;
+      stopSilenceWatch();
       clearPendingRestart();
       recognitionRef.current?.stop();
     };

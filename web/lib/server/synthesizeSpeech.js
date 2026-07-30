@@ -11,15 +11,20 @@ function withTimeout(promise, ms, label) {
   return Promise.race([promise, timeout]).finally(() => clearTimeout(timeoutId));
 }
 
-/** Generate speech audio on the server. Prefers Gemini when ELEVENLABS_API_KEY is unset. */
+/** Generate speech audio on the server. Prefers ElevenLabs; Gemini only if ElevenLabs fails. */
 export async function synthesizeSpeech(text, language = 'en') {
   const preferGemini = process.env.TTS_PROVIDER === 'gemini';
-  const hasElevenLabs = Boolean(process.env.ELEVENLABS_API_KEY) && !skipElevenLabs && !preferGemini;
+  const hasElevenLabs =
+    Boolean(process.env.ELEVENLABS_API_KEY) && !skipElevenLabs && !preferGemini;
 
   if (hasElevenLabs) {
     try {
       const t1 = Date.now();
-      const response = await withTimeout(speakWithElevenLabs(text, language), 2000, 'ElevenLabs');
+      const response = await withTimeout(
+        speakWithElevenLabs(text, language),
+        10000,
+        'ElevenLabs'
+      );
       const buffer = Buffer.from(await response.arrayBuffer());
       console.log(`[tts] elevenlabs: ${Date.now() - t1}ms`);
       return {
@@ -28,11 +33,12 @@ export async function synthesizeSpeech(text, language = 'en') {
         provider: 'elevenlabs',
       };
     } catch (err) {
-      if (err.message.includes('402') || err.message.includes('payment_required')) {
+      const message = err.message || '';
+      if (message.includes('402') || message.includes('payment_required')) {
         skipElevenLabs = true;
         console.warn('ElevenLabs unavailable on this plan — using Gemini TTS.');
       } else {
-        console.warn('ElevenLabs failed, falling back to Gemini TTS:', err.message);
+        console.warn('ElevenLabs failed, falling back to Gemini TTS:', message);
       }
     }
   }
