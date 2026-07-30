@@ -14,7 +14,7 @@ const inter = Inter({
 });
 
 export const metadata = {
-  title: "Select Unit",
+  title: "Ask Turathi",
   description: "Choose your character, then confirm to continue",
 };
 
